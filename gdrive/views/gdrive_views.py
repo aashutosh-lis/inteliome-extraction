@@ -8,27 +8,30 @@ from googleapiclient.http import MediaIoBaseDownload
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from gdrive.utils import project_return
 
 
 class AuthenticationView(APIView):
     def get(self, *args, **kwargs):
         # For the current user, check if refresh token exists in the database
-        creds = get_creds_from_db()
-        if not (creds and creds.refresh_token):
-            return Response(
-                {"error": "no credentials found"}, status=status.HTTP_404_NOT_FOUND
-            )
-        else:
-            if creds.valid:
-                return {"token": creds.token}
-            else:
-                creds.refresh(Request())
-                # save the updated credsntials to db
+        # creds = get_creds_from_db()
+        # if not (creds and creds.refresh_token):
+        #     return Response(
+        #         {"error": "no credentials found"}, status=status.HTTP_404_NOT_FOUND
+        #     )
+        # else:
+        #     if creds.valid:
+        #         return {"token": creds.token}
+        #     else:
+        #         creds.refresh(Request())
+        #         # save the updated credsntials to db
 
-                return {"token": creds.token}
+        #         return {"token": creds.token}
         # if refresh token exists, and is valid, use it to generate an access token
         # if refresh token is not present, return null
-        return Response({"hello": "authentication"}, status=status.HTTP_200_OK)
+        return project_return(
+            message="Successful", data=None, status=status.HTTP_200_OK, error=None
+        )
 
 
 class OauthCallbackView(APIView):
@@ -37,7 +40,6 @@ class OauthCallbackView(APIView):
         scopes = request.data.get("scope").split()
         print(f"authorization_code: {authorization_code}")
         print(f"scopes: {scopes}")
-        print(os.getcwd())
 
         flow = Flow.from_client_secrets_file(
             "client_secret.json",
@@ -48,13 +50,12 @@ class OauthCallbackView(APIView):
         credentials = flow.credentials
         # TODO: Write to database
         pprint(credentials.token)
-        print("-" * 100)
-        print("Valid? ", credentials.valid)
-        print("Refresh Token? ", credentials.refresh_token)
-        credentials.refresh(Request())
-        print("-" * 100)
-        print(credentials.token)
-        return Response(credentials.to_json(), status=status.HTTP_200_OK)
+        return project_return(
+            message="Successful",
+            data=credentials.token,
+            status=status.HTTP_200_OK,
+            error=None,
+        )
 
 
 class ExtractionView(APIView):
