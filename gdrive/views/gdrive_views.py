@@ -1,5 +1,4 @@
 import os
-from pprint import pprint
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import Flow
@@ -8,11 +7,26 @@ from googleapiclient.http import MediaIoBaseDownload
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from gdrive.utils import project_return
+from gdrive.utils import project_return, credentials_to_dict
+from gdrive.serializer import RequestDataSerializer
 
 
 class AuthenticationView(APIView):
     def get(self, *args, **kwargs):
+        if os.path.exists("credentials.json"):
+            scopes = "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.metadata.readonly"
+            credentials = Credentials.from_authorized_user_file(
+                "credentials.json", scopes=scopes
+            )
+            return project_return(
+                message="Successful",
+                data=credentials_to_dict(credentials),
+                error=None,
+                status=status.HTTP_200_OK,
+            )
+        return project_return(
+            message="Successful", data=None, status=status.HTTP_200_OK, error=None
+        )
         # For the current user, check if refresh token exists in the database
         # creds = get_creds_from_db()
         # if not (creds and creds.refresh_token):
@@ -29,17 +43,12 @@ class AuthenticationView(APIView):
         #         return {"token": creds.token}
         # if refresh token exists, and is valid, use it to generate an access token
         # if refresh token is not present, return null
-        return project_return(
-            message="Successful", data=None, status=status.HTTP_200_OK, error=None
-        )
 
 
 class OauthCallbackView(APIView):
     def post(self, request, *args, **kwargs):
         authorization_code = request.data.get("code")
         scopes = request.data.get("scope").split()
-        print(f"authorization_code: {authorization_code}")
-        print(f"scopes: {scopes}")
 
         flow = Flow.from_client_secrets_file(
             "client_secret.json",
@@ -48,21 +57,24 @@ class OauthCallbackView(APIView):
         )
         flow.fetch_token(code=authorization_code)
         credentials = flow.credentials
-        # TODO: Write to database
-        pprint(credentials.token)
+        print(credentials)
+        # with open("credentials.json", "w") as creds_file:
+        #     creds_file.write(credentials.to_json())
         return project_return(
             message="Successful",
-            data=credentials.token,
+            data=credentials_to_dict(credentials),
             status=status.HTTP_200_OK,
             error=None,
         )
 
 
 class ExtractionView(APIView):
+    serializer_class = RequestDataSerializer
+
     def download(self, service, id, name):
         try:
             media_request = service.files().get_media(fileId=id)
-            downloadPath = os.path.join("../downloads/", f"{id}_{name}")
+            downloadPath = os.path.join("downloads", f"{id}_{name}")
             print("downloadPath: ", downloadPath)
             with open(downloadPath, "wb") as file:
                 downloader = MediaIoBaseDownload(file, media_request)
@@ -113,14 +125,32 @@ class ExtractionView(APIView):
         return {"successful": successful_files, "failed": failed_files}
 
     def post(self, request, *args, **kwargs):
-        request_files = request.data
-
-        credentials = Credentials.from_authorized_user_file("../credentials.json")
-        try:
-            drive_service = build("drive", "v3", credentials=credentials)
-        except:
-            response_data = {"error": "could not initialize service"}
-            return response_data, 400
-
-        download_result = self.download_files(drive_service, request_files)
-        return Response(download_result, status=status.HTTP_200_OK)
+        print(request.data)
+        request_obj = self.serializer_class(data=request.data)
+        if request_obj.is_valid():
+            credentials_data = request_obj.validated_data["credentials"]
+            request_files = request_obj.validated_data["files"]
+            credentials = Credentials.from_authorized_user_info(credentials_data)
+            try:
+                drive_service = build("drive", "v3", credentials=credentials)
+            except Exception as e:
+                return project_return(
+                    message="Error",
+                    data=None,
+                    error=str(e),
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            download_result = self.download_files(drive_service, request_files)
+            return project_return(
+                message="Successful",
+                data=download_result,
+                error=None,
+                status=status.HTTP_201_CREATED,
+            )
+        else:
+            return project_return(
+                message="Error",
+                data=None,
+                error="Invalid request body",
+                status=status.HTTP_400_BAD_REQUEST,
+            )
