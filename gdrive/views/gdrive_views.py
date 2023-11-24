@@ -9,6 +9,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from gdrive.utils import project_return, credentials_to_dict
 from gdrive.serializer import RequestDataSerializer
+from minio import Minio
+from minio.error import S3Error
+from urllib.parse import quote
 
 
 class AuthenticationView(APIView):
@@ -57,9 +60,7 @@ class OauthCallbackView(APIView):
         )
         flow.fetch_token(code=authorization_code)
         credentials = flow.credentials
-        print(credentials)
-        # with open("credentials.json", "w") as creds_file:
-        #     creds_file.write(credentials.to_json())
+
         return project_return(
             message="Successful",
             data=credentials_to_dict(credentials),
@@ -72,19 +73,35 @@ class ExtractionView(APIView):
     serializer_class = RequestDataSerializer
 
     def download(self, service, id, name):
+        minio_client = Minio(
+            "192.168.50.144:9000",
+            access_key="minio",
+            secret_key="miniopassword",
+            secure=False,
+        )
+
+        bucket_name = "tests"
         try:
             media_request = service.files().get_media(fileId=id)
-            downloadPath = os.path.join("downloads", f"{id}_{name}")
-            print("downloadPath: ", downloadPath)
-            with open(downloadPath, "wb") as file:
+            download_path = os.path.join("downloads", f"{id}_{name}")
+            with open(download_path, "wb") as file:
                 downloader = MediaIoBaseDownload(file, media_request)
                 done = False
                 while done is False:
                     status, done = downloader.next_chunk()
                     print(f"Download {int(status.progress() * 100)}.")
+
+                minio_client.fput_object(
+                    bucket_name, f"{id}_{name}", f"downloads/{id}_{name}"
+                )
+                print(f"Uploaded to minio: {name}")
+        except S3Error as e:
+            print(f"Error uploading file: {e}")
         except Exception as e:
             print(f"Error downloading {name}: {str(e)}")
             raise
+        finally:
+            os.remove(download_path)
 
     def list_files(self, service, dir_id):
         results = (
@@ -106,18 +123,18 @@ class ExtractionView(APIView):
             file_name = item.get("name")
             file_type = item.get("mimeType")
 
-            print(file_name)
-
             if "folder" in file_type:
                 folder_contents = self.list_files(service, file_id)
-                print("Folder contents", folder_contents)
                 result = self.download_files(service, folder_contents)
                 successful_files.extend(result["successful"])
                 failed_files.extend(result["failed"])
             else:
                 try:
                     self.download(service, file_id, file_name)
-                    successful_files.append(file_name)
+                    file_url = (
+                        f"http://192.168.50.144:9000/tests/{file_id}_{quote(file_name)}"
+                    )
+                    successful_files.append(file_url)
                 except Exception as e:
                     print(f"Error processing {file_name}: {str(e)}")
                     failed_files.append(file_name)
@@ -125,7 +142,6 @@ class ExtractionView(APIView):
         return {"successful": successful_files, "failed": failed_files}
 
     def post(self, request, *args, **kwargs):
-        print(request.data)
         request_obj = self.serializer_class(data=request.data)
         if request_obj.is_valid():
             credentials_data = request_obj.validated_data["credentials"]
