@@ -12,6 +12,7 @@ from gdrive.serializer import RequestDataSerializer
 from minio import Minio
 from minio.error import S3Error
 from urllib.parse import quote
+from decouple import config
 
 
 class AuthenticationView(APIView):
@@ -73,14 +74,18 @@ class ExtractionView(APIView):
     serializer_class = RequestDataSerializer
 
     def download(self, service, id, name):
+        minio_host = config("MINIO_HOST")
+        minio_access_key = config("MINIO_ACCESS_KEY")
+        minio_secret_key = config("MINIO_SECRET_KEY")
+
         minio_client = Minio(
-            "192.168.50.144:9000",
-            access_key="minio",
-            secret_key="miniopassword",
+            minio_host,
+            access_key=minio_access_key,
+            secret_key=minio_secret_key,
             secure=False,
         )
 
-        bucket_name = "tests"
+        bucket_name = config("MINIO_BUCKET")
         try:
             media_request = service.files().get_media(fileId=id)
             download_path = os.path.join("downloads", f"{id}_{name}")
@@ -131,9 +136,8 @@ class ExtractionView(APIView):
             else:
                 try:
                     self.download(service, file_id, file_name)
-                    file_url = (
-                        f"http://192.168.50.144:9000/tests/{file_id}_{quote(file_name)}"
-                    )
+                    bucket_name = config("MINIO_BUCKET")
+                    file_url = f"http://192.168.50.144:9000/{bucket_name}/{file_id}_{quote(file_name)}"
                     successful_files.append(file_url)
                 except Exception as e:
                     print(f"Error processing {file_name}: {str(e)}")
