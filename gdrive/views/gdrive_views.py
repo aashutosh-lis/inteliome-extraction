@@ -1,18 +1,15 @@
 import os
 from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from rest_framework import status
-from rest_framework.response import Response
 from rest_framework.views import APIView
 from gdrive.utils import project_return, credentials_to_dict
 from gdrive.serializer import RequestDataSerializer
-from minio import Minio
-from minio.error import S3Error
-from urllib.parse import quote
+
 from decouple import config
+import requests
 
 
 class AuthenticationView(APIView):
@@ -31,22 +28,6 @@ class AuthenticationView(APIView):
         return project_return(
             message="Successful", data=None, status=status.HTTP_200_OK, error=None
         )
-        # For the current user, check if refresh token exists in the database
-        # creds = get_creds_from_db()
-        # if not (creds and creds.refresh_token):
-        #     return Response(
-        #         {"error": "no credentials found"}, status=status.HTTP_404_NOT_FOUND
-        #     )
-        # else:
-        #     if creds.valid:
-        #         return {"token": creds.token}
-        #     else:
-        #         creds.refresh(Request())
-        #         # save the updated credsntials to db
-
-        #         return {"token": creds.token}
-        # if refresh token exists, and is valid, use it to generate an access token
-        # if refresh token is not present, return null
 
 
 class OauthCallbackView(APIView):
@@ -73,22 +54,24 @@ class OauthCallbackView(APIView):
 class ExtractionView(APIView):
     serializer_class = RequestDataSerializer
 
-    def download(self, service, id, name):
-        minio_host = config("MINIO_HOST")
-        minio_access_key = config("MINIO_ACCESS_KEY")
-        minio_secret_key = config("MINIO_SECRET_KEY")
+    def upload(self, access_token, file_name, file_path, file_type):
+        files = ["file", (file_name, open(file_path, "rb"), file_type)]
+        headers = {"Authorization": f"Bearer {access_token}"}
 
-        minio_client = Minio(
-            minio_host,
-            access_key=minio_access_key,
-            secret_key=minio_secret_key,
-            secure=False,
+        response = requests.post(
+            config("FILE_UPLOAD_URL"), headers=headers, files=files
         )
 
-        bucket_name = config("MINIO_BUCKET")
+        result = response.json()
+        if result.get("result") != 200:
+            return
+        return result.get("data")
+
+    def download(self, service, id, name, download_path):
         try:
+            file_name = f"{id}_{name}"
+            download_path = os.path.join("downloads", file_name)
             media_request = service.files().get_media(fileId=id)
-            download_path = os.path.join("downloads", f"{id}_{name}")
             with open(download_path, "wb") as file:
                 downloader = MediaIoBaseDownload(file, media_request)
                 done = False
@@ -96,17 +79,9 @@ class ExtractionView(APIView):
                     status, done = downloader.next_chunk()
                     print(f"Download {int(status.progress() * 100)}.")
 
-                minio_client.fput_object(
-                    bucket_name, f"{id}_{name}", f"downloads/{id}_{name}"
-                )
-                print(f"Uploaded to minio: {name}")
-        except S3Error as e:
-            print(f"Error uploading file: {e}")
         except Exception as e:
             print(f"Error downloading {name}: {str(e)}")
             raise
-        finally:
-            os.remove(download_path)
 
     def list_files(self, service, dir_id):
         results = (
@@ -134,14 +109,26 @@ class ExtractionView(APIView):
                 successful_files.extend(result["successful"])
                 failed_files.extend(result["failed"])
             else:
+                download_path = os.path.join("downloads", file_name)
                 try:
-                    self.download(service, file_id, file_name)
-                    bucket_name = config("MINIO_BUCKET")
-                    file_url = f"http://192.168.50.144:9000/{bucket_name}/{file_id}_{quote(file_name)}"
+                    self.download(
+                        service,
+                        file_id=file_id,
+                        file_name=file_name,
+                        download_path=download_path,
+                    )
+                    file_url = self.upload(
+                        "",
+                        file_name=file_name,
+                        file_path=download_path,
+                        file_type=file_type,
+                    )
                     successful_files.append(file_url)
                 except Exception as e:
                     print(f"Error processing {file_name}: {str(e)}")
                     failed_files.append(file_name)
+                finally:
+                    os.remove(download_path)
 
         return {"successful": successful_files, "failed": failed_files}
 
@@ -150,6 +137,11 @@ class ExtractionView(APIView):
         if request_obj.is_valid():
             credentials_data = request_obj.validated_data["credentials"]
             request_files = request_obj.validated_data["files"]
+            access_token = request_obj.validated_data["access_token"]
+
+            print("=" * 100)
+            print(access_token)
+            print("=" * 100)
             credentials = Credentials.from_authorized_user_info(credentials_data)
             try:
                 drive_service = build("drive", "v3", credentials=credentials)

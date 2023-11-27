@@ -20,3 +20,4 @@ class RequestFilesSerializer(serializers.Serializer):
 class RequestDataSerializer(serializers.Serializer):
     credentials = CredentialsSerializer()
     files = RequestFilesSerializer(many=True)
+    access_token = serializers.CharField()
