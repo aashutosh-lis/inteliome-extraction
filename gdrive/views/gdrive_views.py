@@ -1,15 +1,16 @@
 import os
+
+import requests
+from decouple import config
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from rest_framework import status
 from rest_framework.views import APIView
-from gdrive.utils import project_return, credentials_to_dict
-from gdrive.serializer import RequestDataSerializer
 
-from decouple import config
-import requests
+from gdrive.serializer import RequestDataSerializer
+from gdrive.utils import credentials_to_dict, project_return
 
 
 class AuthenticationView(APIView):
@@ -55,7 +56,7 @@ class ExtractionView(APIView):
     serializer_class = RequestDataSerializer
 
     def upload(self, access_token, file_name, file_path, file_type):
-        files = ["file", (file_name, open(file_path, "rb"), file_type)]
+        files = {"file": (file_name, open(file_path, "rb"), file_type)}
         headers = {"Authorization": f"Bearer {access_token}"}
 
         response = requests.post(
@@ -63,21 +64,19 @@ class ExtractionView(APIView):
         )
 
         result = response.json()
-        if result.get("result") != 200:
+        if result.get("status") != 200:
             return
         return result.get("data")
 
     def download(self, service, id, name, download_path):
         try:
-            file_name = f"{id}_{name}"
-            download_path = os.path.join("downloads", file_name)
             media_request = service.files().get_media(fileId=id)
             with open(download_path, "wb") as file:
                 downloader = MediaIoBaseDownload(file, media_request)
                 done = False
                 while done is False:
                     status, done = downloader.next_chunk()
-                    print(f"Download {int(status.progress() * 100)}.")
+                    print(f"Download {int(status.progress() * 100)}: {name}.")
 
         except Exception as e:
             print(f"Error downloading {name}: {str(e)}")
@@ -94,7 +93,7 @@ class ExtractionView(APIView):
         )
         return results.get("files", [])
 
-    def download_files(self, service, items):
+    def extract_files(self, service, access_token, items):
         successful_files = []
         failed_files = []
 
@@ -105,7 +104,7 @@ class ExtractionView(APIView):
 
             if "folder" in file_type:
                 folder_contents = self.list_files(service, file_id)
-                result = self.download_files(service, folder_contents)
+                result = self.extract_files(service, folder_contents)
                 successful_files.extend(result["successful"])
                 failed_files.extend(result["failed"])
             else:
@@ -113,17 +112,19 @@ class ExtractionView(APIView):
                 try:
                     self.download(
                         service,
-                        file_id=file_id,
-                        file_name=file_name,
+                        id=file_id,
+                        name=file_name,
                         download_path=download_path,
                     )
                     file_url = self.upload(
-                        "",
+                        access_token=access_token,
                         file_name=file_name,
                         file_path=download_path,
                         file_type=file_type,
                     )
-                    successful_files.append(file_url)
+                    if not file_url:
+                        raise
+                    successful_files.append({"name": file_name, "url": file_url})
                 except Exception as e:
                     print(f"Error processing {file_name}: {str(e)}")
                     failed_files.append(file_name)
@@ -139,9 +140,6 @@ class ExtractionView(APIView):
             request_files = request_obj.validated_data["files"]
             access_token = request_obj.validated_data["access_token"]
 
-            print("=" * 100)
-            print(access_token)
-            print("=" * 100)
             credentials = Credentials.from_authorized_user_info(credentials_data)
             try:
                 drive_service = build("drive", "v3", credentials=credentials)
@@ -152,7 +150,9 @@ class ExtractionView(APIView):
                     error=str(e),
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
-            download_result = self.download_files(drive_service, request_files)
+            download_result = self.extract_files(
+                drive_service, access_token, request_files
+            )
             return project_return(
                 message="Successful",
                 data=download_result,
