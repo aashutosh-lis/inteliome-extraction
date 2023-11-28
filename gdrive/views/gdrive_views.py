@@ -62,8 +62,8 @@ class ExtractionView(APIView):
         response = requests.post(
             config("FILE_UPLOAD_URL"), headers=headers, files=files
         )
-
         result = response.json()
+
         if result.get("status") != 200:
             return
         return result.get("data")
@@ -122,14 +122,13 @@ class ExtractionView(APIView):
                         file_path=download_path,
                         file_type=file_type,
                     )
+
                     if not file_url:
-                        raise
+                        raise Exception("File url not received")
                     successful_files.append({"name": file_name, "url": file_url})
                 except Exception as e:
                     print(f"Error processing {file_name}: {str(e)}")
                     failed_files.append(file_name)
-                finally:
-                    os.remove(download_path)
 
         return {"successful": successful_files, "failed": failed_files}
 
