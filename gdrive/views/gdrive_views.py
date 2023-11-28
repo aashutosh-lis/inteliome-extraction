@@ -104,7 +104,9 @@ class ExtractionView(APIView):
 
             if "folder" in file_type:
                 folder_contents = self.list_files(service, file_id)
-                result = self.extract_files(service, folder_contents)
+                result = self.extract_files(
+                    service=service, access_token=access_token, items=folder_contents
+                )
                 successful_files.extend(result["successful"])
                 failed_files.extend(result["failed"])
             else:
@@ -137,6 +139,8 @@ class ExtractionView(APIView):
         if request_obj.is_valid():
             credentials_data = request_obj.validated_data["credentials"]
             request_files = request_obj.validated_data["files"]
+
+            print("Request files: ", request_files)
             access_token = request_obj.validated_data["access_token"]
 
             credentials = Credentials.from_authorized_user_info(credentials_data)
@@ -150,7 +154,7 @@ class ExtractionView(APIView):
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
             download_result = self.extract_files(
-                drive_service, access_token, request_files
+                service=drive_service, access_token=access_token, items=request_files
             )
             return project_return(
                 message="Successful",
