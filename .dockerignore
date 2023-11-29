@@ -1,0 +1,37 @@
+# Ignore files and directories commonly excluded from Docker builds
+
+# Ignore files and directories starting with a dot
+.*
+!.dockerignore
+!.flake8
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+# Ignore Django related files and directories
+*.log
+*.pot
+*.pyc
+*.pyo
+*.sqlite3
+/static/
+/media/
+
+# Ignore pip cache and virtual environment directories
+/.venv/
+/pip-cache/
+
+# Ignore any testing artifacts
+.coverage
+nosetests.xml
+
+# Ignore any editor or IDE files
+.vscode/
+.idea/
+*.sublime-*
+*.swp
+
+# Ignore any OS-specific files
+.DS_Store
+Thumbs.db
