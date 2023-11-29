@@ -66,7 +66,7 @@ class ExtractionView(APIView):
 
         if result.get("status") != 200:
             return
-        return result.get("data")
+        return result.get("data").get("file_url")
 
     def download(self, service, id, name, download_path):
         try:
@@ -140,7 +140,6 @@ class ExtractionView(APIView):
             credentials_data = request_obj.validated_data["credentials"]
             request_files = request_obj.validated_data["files"]
 
-            print("Request files: ", request_files)
             access_token = request_obj.validated_data["access_token"]
 
             credentials = Credentials.from_authorized_user_info(credentials_data)
