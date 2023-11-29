@@ -1,0 +1,17 @@
+version: '0.1'
+
+services:
+  extractionservice:
+    image: extractionservice
+    env_file: 
+      - .env 
+    build:
+      context: . 
+      dockerfile: ./Dockerfile
+    ports:
+      - 5002:8000
+    volumes:
+      - ./extractionlogs.log:/app/extractionlogs.log
+      - ./client_secret.json:/app/client_secret.json
+
+

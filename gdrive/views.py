@@ -1,92 +1,43 @@
 import os
-from pprint import pprint
+import requests
+from decouple import config
 from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from rest_framework import status
-from rest_framework.response import Response
 from rest_framework.views import APIView
-from gdrive.utils import project_return
-from .models import Credential
-from .utils import project_return, credentials_to_dict
-from django.core.exceptions import ObjectDoesNotExist
-import ast 
-from .serializers import CredentialsSerializer
+from .serializers import RequestDataSerializer
+from .utils import project_return
 
-
-
-class AuthenticationView(APIView):
-    def get(self, *args, **kwargs):
-        # For the current user, check if refresh token exists in the database
-        try:
-            credentialobj = Credential.objects.get(id=1)
-            scopes = ast.literal_eval(credentialobj.scopes)
-            creds=Credentials(
-                token=credentialobj.token,
-                refresh_token=credentialobj.refresh_token,
-                token_uri= credentialobj.token_uri,
-                client_id=credentialobj.client_id,
-                client_secret=credentialobj.client_secret,
-                scopes=scopes   
-            )
-            print(creds)
-            print(creds.expiry)
-            print(credentials_to_dict(creds))
-            if not (creds and creds.refresh_token):
-                return project_return(message="no credentials found", status=status.HTTP_200_OK)
-            else:
-                if creds.valid:
-                    return project_return(message="Successful", data= creds.token, status=status.HTTP_200_OK)
-                else:
-                    creds.refresh(Request())
-                    credentialobj.token = creds.token
-                    credentialobj.expiry = creds.expiry
-                    credentialobj.save()
-                    # save the updated credentials to db
-                    return project_return(message="Successful", data= creds.token, status=status.HTTP_200_OK)
-        except ObjectDoesNotExist:
-            print("object does not exist ")
-            return project_return(message="no credentials found", data=None, status=status.HTTP_204_NO_CONTENT)
-
-class OauthCallbackView(APIView):
-    def post(self, request, *args, **kwargs):
-        authorization_code = request.data.get("code")
-        scopes = request.data.get("scope").split()
-        print(f"authorization_code: {authorization_code}")
-        print(f"scopes: {scopes}")
-
-        flow = Flow.from_client_secrets_file(
-            "client_secret.json",
-            scopes=scopes,
-            redirect_uri="postmessage",
-        )
-        flow.fetch_token(code=authorization_code)
-        credentials = flow.credentials
-        Credential.objects.create(token=credentials.token, refresh_token=credentials.refresh_token, expiry=credentials.expiry, scopes=credentials.scopes, token_uri=credentials.token_uri, client_id=credentials.client_id, client_secret=credentials.client_secret)
-        pprint(credentials.token)
-        return project_return(
-            message="Successful",
-            data=credentials_to_dict(credentials),
-            status=status.HTTP_200_OK,
-            error=None,
-        )
 
 
 class ExtractionView(APIView):
-    serializer_class = CredentialsSerializer
-    def download(self, service, id, name):
+    serializer_class = RequestDataSerializer
+
+    def upload(self, access_token, file_name, file_path, file_type):
+        files = {"file": (file_name, open(file_path, "rb"), file_type)}
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        response = requests.post(
+            config("FILE_UPLOAD_URL"), headers=headers, files=files
+        )
+        result = response.json()
+
+        if result.get("status") != 200:
+            return
+        return result.get("data")
+
+    def download(self, service, id, name, download_path):
         try:
             media_request = service.files().get_media(fileId=id)
-            downloadPath = os.path.join("downloads/", f"{id}_{name}")
-            print("downloadPath: ", downloadPath)
-            with open(downloadPath, "wb") as file:
+            with open(download_path, "wb") as file:
                 downloader = MediaIoBaseDownload(file, media_request)
                 done = False
                 while done is False:
                     status, done = downloader.next_chunk()
-                    print(f"Download {int(status.progress() * 100)}.")
+                    print(f"Download {int(status.progress() * 100)}: {name}.")
+
         except Exception as e:
             print(f"Error downloading {name}: {str(e)}")
             raise
@@ -102,7 +53,7 @@ class ExtractionView(APIView):
         )
         return results.get("files", [])
 
-    def download_files(self, service, items):
+    def extract_files(self, service, access_token, items):
         successful_files = []
         failed_files = []
 
@@ -110,18 +61,33 @@ class ExtractionView(APIView):
             file_id = item.get("id")
             file_name = item.get("name")
             file_type = item.get("mimeType")
-            print(file_name)
 
             if "folder" in file_type:
                 folder_contents = self.list_files(service, file_id)
-                print("Folder contents", folder_contents)
-                result = self.download_files(service, folder_contents)
+                result = self.extract_files(
+                    service=service, access_token=access_token, items=folder_contents
+                )
                 successful_files.extend(result["successful"])
                 failed_files.extend(result["failed"])
             else:
+                download_path = os.path.join("downloads", file_name)
                 try:
-                    self.download(service, file_id, file_name)
-                    successful_files.append(file_name)
+                    self.download(
+                        service,
+                        id=file_id,
+                        name=file_name,
+                        download_path=download_path,
+                    )
+                    file_url = self.upload(
+                        access_token=access_token,
+                        file_name=file_name,
+                        file_path=download_path,
+                        file_type=file_type,
+                    )
+
+                    if not file_url:
+                        raise Exception("File url not received")
+                    successful_files.append({"name": file_name, "url": file_url})
                 except Exception as e:
                     print(f"Error processing {file_name}: {str(e)}")
                     failed_files.append(file_name)
@@ -130,16 +96,37 @@ class ExtractionView(APIView):
 
     def post(self, request, *args, **kwargs):
         request_obj = self.serializer_class(data=request.data)
+        print(request.data)
         if request_obj.is_valid():
             credentials_data = request_obj.validated_data["credentials"]
             request_files = request_obj.validated_data["files"]
+
+            print("Request files: ", request_files)
+            access_token = request_obj.validated_data["access_token"]
+
             credentials = Credentials.from_authorized_user_info(credentials_data)
             try:
                 drive_service = build("drive", "v3", credentials=credentials)
             except Exception as e:
-                return project_return(message="Error processing request", error = str(e), status=status.HTTP_503_SERVICE_UNAVAILABLE)
-            
-            download_result = self.download_files(drive_service, request_files)
-            return project_return(message="download success", data=download_result, status=status.HTTP_201_CREATED)
+                return project_return(
+                    message="Error",
+                    data=None,
+                    error=str(e),
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            download_result = self.extract_files(
+                service=drive_service, access_token=access_token, items=request_files
+            )
+            return project_return(
+                message="Successful",
+                data=download_result,
+                error=None,
+                status=status.HTTP_201_CREATED,
+            )
         else:
-            return project_return(message="Error processing request", error = "Invalid Request Body", status=status.HTTP_400_BAD_REQUEST)
+            return project_return(
+                message="Error",
+                data=None,
+                error="Invalid request body",
+                status=status.HTTP_400_BAD_REQUEST,
+            )
