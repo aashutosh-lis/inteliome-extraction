@@ -1,71 +1,45 @@
+import logging
 import os
-
 import requests
 from decouple import config
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from rest_framework import status
 from rest_framework.views import APIView
 
-from gdrive.serializer import RequestDataSerializer
-from gdrive.utils import credentials_to_dict, project_return
+from gdrive.serializers import RequestDataSerializer
+from gdrive.utils import project_return
 
-
-class AuthenticationView(APIView):
-    def get(self, *args, **kwargs):
-        if os.path.exists("credentials.json"):
-            scopes = "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.metadata.readonly"
-            credentials = Credentials.from_authorized_user_file(
-                "credentials.json", scopes=scopes
-            )
-            return project_return(
-                message="Successful",
-                data=credentials_to_dict(credentials),
-                error=None,
-                status=status.HTTP_200_OK,
-            )
-        return project_return(
-            message="Successful", data=None, status=status.HTTP_200_OK, error=None
-        )
-
-
-class OauthCallbackView(APIView):
-    def post(self, request, *args, **kwargs):
-        authorization_code = request.data.get("code")
-        scopes = request.data.get("scope").split()
-
-        flow = Flow.from_client_secrets_file(
-            "client_secret.json",
-            scopes=scopes,
-            redirect_uri="postmessage",
-        )
-        flow.fetch_token(code=authorization_code)
-        credentials = flow.credentials
-
-        return project_return(
-            message="Successful",
-            data=credentials_to_dict(credentials),
-            status=status.HTTP_200_OK,
-            error=None,
-        )
+logger = logging.getLogger(__name__)
 
 
 class ExtractionView(APIView):
     serializer_class = RequestDataSerializer
 
     def upload(self, access_token, file_name, file_path, file_type):
-        files = {"file": (file_name, open(file_path, "rb"), file_type)}
-        headers = {"Authorization": f"Bearer {access_token}"}
+        try:
+            with open(file_path, "rb") as f:
+                files = {"file": (file_name, f, file_type)}
+                headers = {"Authorization": f"Bearer {access_token}"}
 
-        response = requests.post(
-            config("FILE_UPLOAD_URL"), headers=headers, files=files
-        )
-        result = response.json()
+                response = requests.post(
+                    config("FILE_UPLOAD_URL"), headers=headers, files=files
+                )
+            result = response.json()
 
-        if result.get("status") != 200:
+            if result.get("status") != 200:
+                logger.error(f"file upload failed {file_name}")
+                return
+            logger.info(f"file uploaded successfully {file_name}")
+
+        except Exception as e:
+            logger.error(f"file upload failed {file_name}:{str(e)}")
             return
+        finally:
+            if os.path.exists(file_path) and result.get("status") == 200:
+                os.remove(file_path)
+                logger.info(f"file deleted successfully {file_name}")
         return result.get("data").get("file_url")
 
     def download(self, service, id, name, download_path):
@@ -76,10 +50,9 @@ class ExtractionView(APIView):
                 done = False
                 while done is False:
                     status, done = downloader.next_chunk()
-                    print(f"Download {int(status.progress() * 100)}: {name}.")
-
+                    logger.info(f"Download {int(status.progress() * 100)}: {name}.")
         except Exception as e:
-            print(f"Error downloading {name}: {str(e)}")
+            logger.error(f"file download failed {name}:{str(e)}")
             raise
 
     def list_files(self, service, dir_id):
@@ -126,12 +99,14 @@ class ExtractionView(APIView):
                     )
 
                     if not file_url:
+                        logger.error(f"file urls not received")
                         raise Exception("File url not received")
                     successful_files.append({"name": file_name, "url": file_url})
                 except Exception as e:
-                    print(f"Error processing {file_name}: {str(e)}")
+                    logger.error(f"Error processing {file_name}: {str(e)}")
                     failed_files.append(file_name)
-
+        logger.info(f"Successful files: {successful_files}")
+        logger.info(f"Failed files: {failed_files}")
         return {"successful": successful_files, "failed": failed_files}
 
     def post(self, request, *args, **kwargs):
@@ -139,13 +114,13 @@ class ExtractionView(APIView):
         if request_obj.is_valid():
             credentials_data = request_obj.validated_data["credentials"]
             request_files = request_obj.validated_data["files"]
-
             access_token = request_obj.validated_data["access_token"]
 
             credentials = Credentials.from_authorized_user_info(credentials_data)
             try:
                 drive_service = build("drive", "v3", credentials=credentials)
             except Exception as e:
+                logger.error(f"Exception:{str(e)}")
                 return project_return(
                     message="Error",
                     data=None,
