@@ -10,12 +10,14 @@ class CredentialsSerializer(serializers.Serializer):
     scopes = serializers.ListField(child=serializers.CharField())
     expiry = serializers.CharField()
 
+
 class RequestFilesSerializer(serializers.Serializer):
     id = serializers.CharField()
     name = serializers.CharField()
     mimeType = serializers.CharField()
 
+
 class RequestDataSerializer(serializers.Serializer):
     credentials = CredentialsSerializer()
     files = RequestFilesSerializer(many=True)
-    access_token=serializers.CharField()
+    access_token = serializers.CharField()
