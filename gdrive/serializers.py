@@ -10,7 +10,6 @@ class CredentialsSerializer(serializers.Serializer):
     scopes = serializers.ListField(child=serializers.CharField())
     expiry = serializers.CharField()
 
-
 class RequestFilesSerializer(serializers.Serializer):
     id = serializers.CharField()
     name = serializers.CharField()
